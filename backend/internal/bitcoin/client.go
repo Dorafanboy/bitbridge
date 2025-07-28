@@ -15,6 +15,14 @@ type Client struct {
 	network   *chaincfg.Params
 }
 
+type Config struct {
+	Host     string
+	Port     int
+	User     string
+	Password string
+	Network  string
+}
+
 type UTXOInfo struct {
 	TxID          string  `json:"txid"`
 	Vout          uint32  `json:"vout"`
@@ -25,11 +33,11 @@ type UTXOInfo struct {
 	BlockHeight   int64   `json:"blockHeight"`
 }
 
-func NewClient(host string, port int, user, password, network string) (*Client, error) {
+func NewClient(config Config) (*Client, error) {
 	connCfg := &rpcclient.ConnConfig{
-		Host:         fmt.Sprintf("%s:%d", host, port),
-		User:         user,
-		Pass:         password,
+		Host:         fmt.Sprintf("%s:%d", config.Host, config.Port),
+		User:         config.User,
+		Pass:         config.Password,
 		HTTPPostMode: true,
 		DisableTLS:   true,
 	}
@@ -40,7 +48,7 @@ func NewClient(host string, port int, user, password, network string) (*Client, 
 	}
 
 	var netParams *chaincfg.Params
-	switch network {
+	switch config.Network {
 	case "mainnet":
 		netParams = &chaincfg.MainNetParams
 	case "testnet":
@@ -48,7 +56,7 @@ func NewClient(host string, port int, user, password, network string) (*Client, 
 	case "regtest":
 		netParams = &chaincfg.RegressionNetParams
 	default:
-		return nil, fmt.Errorf("unsupported network: %s", network)
+		return nil, fmt.Errorf("unsupported network: %s", config.Network)
 	}
 
 	return &Client{
@@ -175,4 +183,8 @@ func (c *Client) Close() {
 	if c.rpcClient != nil {
 		c.rpcClient.Shutdown()
 	}
+}
+
+func (c *Client) GetRPCClient() *rpcclient.Client {
+	return c.rpcClient
 }

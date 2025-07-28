@@ -5,20 +5,24 @@ import (
 	"log"
 	"strings"
 
-	"bitbridge/internal/indexer"
 	"bitbridge/pkg/config"
 	"bitbridge/pkg/types"
 )
 
 type Service struct {
-	client      *Client
-	monitor     *indexer.UTXOMonitor
-	config      *config.BitcoinConfig
+	client           *Client
+	config           *config.BitcoinConfig
 	depositAddresses map[string]bool
 }
 
 func NewService(cfg *config.BitcoinConfig) (*Service, error) {
-	client, err := NewClient(cfg.RPCHost, cfg.RPCPort, cfg.RPCUser, cfg.RPCPassword, cfg.Network)
+	client, err := NewClient(Config{
+		Host:     cfg.RPCHost,
+		Port:     cfg.RPCPort,
+		User:     cfg.RPCUser,
+		Password: cfg.RPCPassword,
+		Network:  cfg.Network,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Bitcoin client: %v", err)
 	}
@@ -29,17 +33,11 @@ func NewService(cfg *config.BitcoinConfig) (*Service, error) {
 		return nil, fmt.Errorf("failed to connect to Bitcoin node: %v", err)
 	}
 
-	monitor := indexer.NewUTXOMonitor(client)
-	
 	service := &Service{
 		client:           client,
-		monitor:          monitor,
 		config:           cfg,
 		depositAddresses: make(map[string]bool),
 	}
-
-	// Set up UTXO callback for new deposits
-	monitor.AddCallback(service.handleUTXOEvent)
 
 	log.Printf("Bitcoin service initialized for network: %s", cfg.Network)
 	return service, nil
@@ -56,15 +54,11 @@ func (s *Service) Start() error {
 	
 	log.Printf("Connected to Bitcoin %s network", networkInfo)
 	
-	// Start UTXO monitoring
-	s.monitor.Start()
-	
 	return nil
 }
 
 func (s *Service) Stop() {
 	log.Println("Stopping Bitcoin service...")
-	s.monitor.Stop()
 	s.client.Close()
 }
 
@@ -74,12 +68,6 @@ func (s *Service) GenerateDepositAddress() (string, error) {
 		return "", err
 	}
 
-	// Add to watch list
-	err = s.monitor.AddWatchAddress(address)
-	if err != nil {
-		log.Printf("Warning: failed to watch new deposit address %s: %v", address, err)
-	}
-
 	s.depositAddresses[address] = true
 	log.Printf("Generated new deposit address: %s", address)
 	
@@ -87,7 +75,7 @@ func (s *Service) GenerateDepositAddress() (string, error) {
 }
 
 func (s *Service) WatchAddress(address string) error {
-	err := s.monitor.AddWatchAddress(address)
+	err := s.client.WatchAddress(address)
 	if err != nil {
 		return err
 	}
@@ -97,26 +85,73 @@ func (s *Service) WatchAddress(address string) error {
 }
 
 func (s *Service) GetAddressUTXOs(address string) ([]*types.UTXO, error) {
-	utxos := s.monitor.GetUTXOsByAddress(address)
+	// Direct RPC call without monitor
+	utxoInfos, err := s.client.GetAddressUTXOs(address)
+	if err != nil {
+		return nil, err
+	}
+
+	var utxos []*types.UTXO
+	for _, info := range utxoInfos {
+		utxo := &types.UTXO{
+			TxID:         info.TxID,
+			Vout:         info.Vout,
+			Amount:       int64(info.Amount * 100000000), // Convert to satoshis
+			Address:      info.Address,
+			ScriptPubKey: info.ScriptPubKey,
+			Confirmations: int(info.Confirmations),
+		}
+		utxos = append(utxos, utxo)
+	}
+	
 	return utxos, nil
 }
 
 func (s *Service) GetUTXO(txid string, vout uint32) (*types.UTXO, error) {
-	utxo, exists := s.monitor.GetUTXO(txid, vout)
-	if !exists {
+	// Get transaction details
+	tx, err := s.client.GetTransaction(txid)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transaction: %v", err)
+	}
+
+	// Check if output exists
+	if int(vout) >= len(tx.Details) {
 		return nil, fmt.Errorf("UTXO not found: %s:%d", txid, vout)
 	}
+
+	// Create UTXO from transaction details
+	detail := tx.Details[vout]
+	utxo := &types.UTXO{
+		TxID:         txid,
+		Vout:         vout,
+		Amount:       int64(detail.Amount * 100000000), // Convert to satoshis
+		Address:      detail.Address,
+		Confirmations: int(tx.Confirmations),
+	}
+
 	return utxo, nil
 }
 
 func (s *Service) GetAllWatchedUTXOs() []*types.UTXO {
-	return s.monitor.GetAllUTXOs()
+	var allUTXOs []*types.UTXO
+	
+	// Get UTXOs for all watched addresses
+	for address := range s.depositAddresses {
+		utxos, err := s.GetAddressUTXOs(address)
+		if err != nil {
+			log.Printf("Error getting UTXOs for address %s: %v", address, err)
+			continue
+		}
+		allUTXOs = append(allUTXOs, utxos...)
+	}
+	
+	return allUTXOs
 }
 
 func (s *Service) ValidateTransaction(txid string, vout uint32, expectedAmount int64) error {
-	utxo, exists := s.monitor.GetUTXO(txid, vout)
-	if !exists {
-		return fmt.Errorf("UTXO not found: %s:%d", txid, vout)
+	utxo, err := s.GetUTXO(txid, vout)
+	if err != nil {
+		return err
 	}
 
 	if utxo.Amount != expectedAmount {
@@ -165,7 +200,8 @@ func (s *Service) IsValidBitcoinAddress(address string) bool {
 	return false
 }
 
-func (s *Service) handleUTXOEvent(utxo *types.UTXO, event string) {
+// handleUTXOEvent would be called by external monitoring system
+func (s *Service) HandleUTXOEvent(utxo *types.UTXO, event string) {
 	log.Printf("UTXO Event [%s]: %s:%d - %.8f BTC (%d confirmations)", 
 		event, utxo.TxID, utxo.Vout, float64(utxo.Amount)/100000000, utxo.Confirmations)
 
