@@ -88,3 +88,7 @@ func (c *Client) GetPrivateKey() *ecdsa.PrivateKey {
 func (c *Client) GetChainID() *big.Int {
 	return c.chainID
 }
+
+func (c *Client) GetClient() *ethclient.Client {
+	return c.client
+}

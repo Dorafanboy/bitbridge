@@ -31,6 +31,7 @@ type EthereumConfig struct {
 	UTXORegistryAddr   string
 	TokenFactoryAddr   string
 	FusionPlusAddr     string
+	SPVVerifierAddr    string
 }
 
 type FusionConfig struct {
@@ -58,6 +59,7 @@ func Load() *Config {
 			UTXORegistryAddr: getEnv("UTXO_REGISTRY_ADDRESS", ""),
 			TokenFactoryAddr: getEnv("TOKEN_FACTORY_ADDRESS", ""),
 			FusionPlusAddr:   getEnv("FUSION_PLUS_ADDRESS", ""),
+			SPVVerifierAddr:  getEnv("SPV_VERIFIER_ADDRESS", ""),
 		},
 		Fusion: FusionConfig{
 			BaseURL: getEnv("FUSION_BASE_URL", "https://api.1inch.dev"),

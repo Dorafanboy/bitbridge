@@ -103,8 +103,12 @@ func (c *Client) GetAddressUTXOs(address string) ([]UTXOInfo, error) {
 	return utxos, nil
 }
 
-func (c *Client) GetTransaction(txid string) (*rpcclient.GetTransactionResult, error) {
-	return c.rpcClient.GetTransaction(txid)
+func (c *Client) GetTransaction(txid string) (*btcutil.Tx, error) {
+	hash, err := chainhash.NewHashFromStr(txid)
+	if err != nil {
+		return nil, err
+	}
+	return c.rpcClient.GetRawTransaction(hash)
 }
 
 func (c *Client) GetRawTransaction(txid string) (*btcutil.Tx, error) {

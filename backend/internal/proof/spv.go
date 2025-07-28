@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
-	"strconv"
 
 	"bitbridge/internal/bitcoin"
 
@@ -119,7 +118,7 @@ func (g *Generator) GenerateProof(txHashStr string) (*SPVProof, error) {
 		return nil, fmt.Errorf("failed to get best block: %w", err)
 	}
 
-	confirmations := bestBlock.Height - blockHeader.Height + 1
+	confirmations := bestBlock.Height - int64(txResult.Confirmations) + 1
 
 	// Serialize transaction to hex
 	txHex, err := g.serializeTransaction(tx)
@@ -131,7 +130,7 @@ func (g *Generator) GenerateProof(txHashStr string) (*SPVProof, error) {
 		BlockHeader:    blockHeader,
 		MerkleProof:    merkleProof,
 		Transaction:    tx,
-		BlockHeight:    blockHeader.Height,
+		BlockHeight:    int32(bestBlock.Height - confirmations + 1),
 		Confirmations:  int32(confirmations),
 		BlockHash:      blockHash.String(),
 		TransactionHex: txHex,

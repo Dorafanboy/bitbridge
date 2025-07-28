@@ -115,18 +115,17 @@ func (s *Service) GetUTXO(txid string, vout uint32) (*types.UTXO, error) {
 	}
 
 	// Check if output exists
-	if int(vout) >= len(tx.Details) {
+	if int(vout) >= len(tx.MsgTx().TxOut) {
 		return nil, fmt.Errorf("UTXO not found: %s:%d", txid, vout)
 	}
 
 	// Create UTXO from transaction details
-	detail := tx.Details[vout]
+	output := tx.MsgTx().TxOut[vout]
 	utxo := &types.UTXO{
 		TxID:         txid,
 		Vout:         vout,
-		Amount:       int64(detail.Amount * 100000000), // Convert to satoshis
-		Address:      detail.Address,
-		Confirmations: int(tx.Confirmations),
+		Amount:       output.Value, // Already in satoshis
+		Confirmations: 0, // Would need additional RPC call to get confirmations
 	}
 
 	return utxo, nil

@@ -4,9 +4,11 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"bitbridge/internal/bitcoin"
+	"bitbridge/internal/contracts"
 	"bitbridge/internal/ethereum"
 	"bitbridge/internal/fusion"
 	"bitbridge/internal/proof"
@@ -17,6 +19,12 @@ import (
 )
 
 func main() {
+	// Choose API version based on environment variable
+	if os.Getenv("API_VERSION") == "v2" {
+		mainV2()
+		return
+	}
+	
 	log.Println("Starting UTXO-EVM Gateway...")
 
 	// Load configuration
@@ -27,6 +35,7 @@ func main() {
 	var ethService *ethereum.Service
 	var fusionService *fusion.Service
 	var proofService *proof.Service
+	var contractsService *contracts.Service
 	var bitcoinClient *bitcoin.Client
 	
 	if cfg.Ethereum.PrivateKey != "" {
@@ -97,16 +106,32 @@ func main() {
 		log.Println("Warning: Bitcoin RPC credentials not provided, proof generation disabled")
 	}
 
+	// Initialize contracts service if Ethereum is available
+	if ethClient != nil {
+		var err error
+		contractsService, err = contracts.NewService(contracts.ServiceConfig{
+			EthereumClient:  ethClient.GetClient(),
+			EthereumConfig:  &cfg.Ethereum,
+			ContractAddress: cfg.Ethereum.SPVVerifierAddr,
+		})
+		if err != nil {
+			log.Printf("Warning: Failed to initialize contracts service: %v", err)
+		} else {
+			log.Println("Smart contracts service initialized successfully")
+		}
+	}
+
 	r := gin.Default()
 	
 	r.GET("/health", func(c *gin.Context) {
 		status := gin.H{
-			"status":   "healthy",
-			"service":  "utxo-evm-gateway",
-			"ethereum": ethClient != nil,
-			"fusion":   fusionService != nil,
-			"bitcoin":  bitcoinClient != nil,
+			"status":    "healthy",
+			"service":   "utxo-evm-gateway",
+			"ethereum":  ethClient != nil,
+			"fusion":    fusionService != nil,
+			"bitcoin":   bitcoinClient != nil,
 			"spv_proof": proofService != nil,
+			"contracts": contractsService != nil,
 		}
 		
 		if ethClient != nil {
@@ -313,6 +338,130 @@ func main() {
 		r.DELETE("/proof/cache", func(c *gin.Context) {
 			proofService.ClearCache()
 			c.JSON(http.StatusOK, gin.H{"message": "Cache cleared"})
+		})
+	}
+
+	// Add Smart Contract endpoints
+	if contractsService != nil {
+		r.POST("/contracts/deploy", func(c *gin.Context) {
+			ctx := context.Background()
+			result, err := contractsService.DeployContract(ctx)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			
+			c.JSON(http.StatusOK, result)
+		})
+		
+		r.POST("/contracts/verify", func(c *gin.Context) {
+			var req contracts.VerificationRequest
+			
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			
+			if proofService == nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "SPV proof service not available"})
+				return
+			}
+			
+			// Generate SPV proof
+			ctx := context.Background()
+			proofReq := &proof.ProofRequest{
+				TxHash:                req.TxHash,
+				OutputIndex:           req.OutputIndex,
+				RequiredConfirmations: 6,
+			}
+			
+			proofResp, err := proofService.GenerateProof(ctx, proofReq)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate proof: " + err.Error()})
+				return
+			}
+			
+			// Verify on contract
+			verifyResp, err := contractsService.VerifyTransaction(ctx, &req, proofResp.Proof)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			
+			c.JSON(http.StatusOK, verifyResp)
+		})
+		
+		r.POST("/contracts/batch-verify", func(c *gin.Context) {
+			var req contracts.BatchVerificationRequest
+			
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			
+			if proofService == nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "SPV proof service not available"})
+				return
+			}
+			
+			// Generate SPV proofs for all requests
+			ctx := context.Background()
+			var proofRequests []*proof.ProofRequest
+			
+			for _, verifyReq := range req.Requests {
+				proofRequests = append(proofRequests, &proof.ProofRequest{
+					TxHash:                verifyReq.TxHash,
+					OutputIndex:           verifyReq.OutputIndex,
+					RequiredConfirmations: 6,
+				})
+			}
+			
+			proofResponses, err := proofService.BatchGenerateProofs(ctx, proofRequests)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate proofs: " + err.Error()})
+				return
+			}
+			
+			// Extract proofs
+			var proofs []*proof.SPVProof
+			for _, proofResp := range proofResponses {
+				if proofResp != nil {
+					proofs = append(proofs, proofResp.Proof)
+				} else {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate some proofs"})
+					return
+				}
+			}
+			
+			// Verify on contract
+			verifyResp, err := contractsService.BatchVerifyTransactions(ctx, &req, proofs)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			
+			c.JSON(http.StatusOK, verifyResp)
+		})
+		
+		r.GET("/contracts/info", func(c *gin.Context) {
+			info := contractsService.GetContractInfo()
+			c.JSON(http.StatusOK, info)
+		})
+		
+		r.GET("/contracts/is-verified/:txhash", func(c *gin.Context) {
+			txHash := c.Param("txhash")
+			
+			ctx := context.Background()
+			verified, err := contractsService.IsTransactionVerified(ctx, txHash)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			
+			c.JSON(http.StatusOK, gin.H{
+				"tx_hash":  txHash,
+				"verified": verified,
+			})
 		})
 	}
 

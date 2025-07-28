@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"bitbridge/internal/bitcoin"
-	"bitbridge/pkg/types"
 
 	"github.com/btcsuite/btcd/rpcclient"
 )
